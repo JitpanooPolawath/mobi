@@ -1,0 +1,6 @@
+dbt-snowflake==1.7.0
+snowflake-connector-python
+pandas
+pyarrow
+apache-airflow
+openpyxl

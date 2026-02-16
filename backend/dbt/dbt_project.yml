@@ -1,0 +1,18 @@
+name: mobi
+version: "1.0.0"
+config-version: 2
+
+profile: mobi
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  mobi_roger:
+    staging:
+      +materialized: view # no storage cost
+    intermediate:
+      +materialized: view # just logic
+    marts:
+      +materialized: table # FastAPI queries these directly

@@ -1,1 +1,10 @@
 /mobi
+/data
+/tmp
+.env
+
+# airflow
+/backend/airflow/dags/__pycache__
+/backend/airconfig.txt
+/backend/passwords.txt
+/backend/tester

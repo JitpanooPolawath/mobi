@@ -1,0 +1,44 @@
+version: 2
+
+sources:
+  - name: raw
+
+    # Snowflake database
+    database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+    schema: "{{ env_var('SNOWFLAKE_SCHEMA') }}"
+    
+    # Source table description
+    tables:
+      - name: raw_bike_trips
+        description: "Raw bike trip data loaded by the Airflow ETL pipeline"
+        columns:
+          - name: departure
+            description: "Timestamp when the trip started"
+          - name: return
+            description: "Timestamp when the trip ended"
+          - name: bike
+            description: "Bike ID number"
+          - name: electric_bike
+            description: "Whether the bike was electric"
+          - name: departure_station
+            description: "Name of the departure station"
+          - name: return_station
+            description: "Name of the return station"
+          - name: membership_type
+            description: "Rider membership type"
+          - name: covered_distance_m
+            description: "Trip distance in metres"
+          - name: duration_sec
+            description: "Trip duration in seconds"
+          - name: departure_temperature_c
+            description: "Temperature at departure in celsius"
+          - name: return_temperature_c
+            description: "Temperature at return in celsius"
+          - name: stopover_duration_sec
+            description: "Total stopover duration in seconds"
+          - name: number_of_stopovers
+            description: "Number of stopovers during the trip"
+          - name: source_file
+            description: "Source filename this row was loaded from"
+          - name: loaded_at
+            description: "Timestamp when this row was inserted into Snowflake"
