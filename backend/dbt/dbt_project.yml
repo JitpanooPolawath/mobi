@@ -11,8 +11,8 @@ clean-targets: ["target", "dbt_packages"]
 models:
   mobi_roger:
     staging:
-      +materialized: view # no storage cost
+      +materialized: view
     intermediate:
-      +materialized: view # just logic
+      +materialized: view
     marts:
-      +materialized: table # FastAPI queries these directly
+      +materialized: table
