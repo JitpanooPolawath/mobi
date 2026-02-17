@@ -1,5 +1,3 @@
-version: "3.8"
-
 x-airflow-common: &airflow-common
   image: apache/airflow:3.1.7
   environment:
@@ -7,10 +5,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: ""
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    _PIP_ADDITIONAL_REQUIREMENTS: "openpyxl psycopg[binary]"
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    AIRFLOW__API__SECRET_KEY: ${ACCESS_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${ACCESS_KEY}
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/passwords.txt
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # Snowflake env vars passed through to DAGs
     SNOWFLAKE_USER: ${SNOWFLAKE_USER}
     SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
@@ -19,15 +23,27 @@ x-airflow-common: &airflow-common
     SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
     SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
     SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+
+    # Postgres
+    POSTGRES_HOST: ${POSTGRES_HOST}
+    POSTGRES_PORT: ${POSTGRES_PORT}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+    POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
   volumes:
-    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/dags:/opt/airflow/dags/
     - ./dbt:/opt/airflow/dbt
     - ../data:/opt/airflow/data
     - ./airflow-logs:/opt/airflow/logs
+    - ./passwords.txt:/opt/airflow/passwords.txt
   depends_on:
+    &airflow-common-depends-on
     postgres:
       condition: service_healthy
     redis:
+      condition: service_healthy
+    postgres-data:
       condition: service_healthy
 
 services:
@@ -41,41 +57,56 @@ services:
     volumes:
       - postgres-db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow", "-d", "airflow"]
-      interval: 5s
-      retries: 10
-      start_period: 10s
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  postgres-data:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DATABASE}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DATABASE}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
     restart: always
 
   # Airflow's task queue broker
   redis:
     image: redis:7.2
-    ports:
-      - "6379:6379"
+    expose:
+      - 6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      retries: 5
-      start_period: 5s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
     restart: always
     volumes:
       - redis-data:/data
 
   # UI available at localhost:8080
-  airflow-webserver:
+  airflow-apiserver:
     <<: *airflow-common
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
     command: api-server
     ports:
       - "8080:8080"
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -87,53 +118,67 @@ services:
     <<: *airflow-common
     command: scheduler
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local || exit 1"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s 
+      start_period: 30s
     restart: always
 
-  airflow-reserialize:
+
+  airflow-dag-processor:
     <<: *airflow-common
-    command: bash -c "airflow dags reserialize"
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      airflow-webserver:
-        condition: service_healthy
-    restart: on-failure
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
 
   # DAG tasks (extract, validate, load, dbt runs)
   airflow-worker:
     <<: *airflow-common
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
     command: celery worker
-    environment:
-      <<: *airflow-common-env
-      HOSTNAME: airflow-worker
     healthcheck:
-      test: ["CMD-SHELL", "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 30s
     restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
 
   # Initializes the DB and creates the admin user
   airflow-init:
@@ -142,6 +187,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      postgres-data:
         condition: service_healthy
     command: db migrate
     restart: on-failure
@@ -160,10 +207,17 @@ services:
       SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
       SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
       SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
     entrypoint: ["sleep", "infinity"]
-    restart: always
+    restart: always  
 
 volumes:
   postgres-db:
+  postgres-data-db:
   redis-data:
   airflow-logs:

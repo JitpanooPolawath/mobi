@@ -1,27 +1,13 @@
-from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
-from datetime import datetime, timedelta
+from airflow.sdk import dag, task
+import numpy as np
 import pandas as pd
+import psycopg
 import snowflake.connector
+from snowflake.connector.pandas_tools import write_pandas
 import os
+import io
+import pendulum
 import glob
-
-# DEFAULT ARGS
-default_args = {
-    "owner": "mobi-roger",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-    "start_date": datetime(2026, 1, 1),
-}
-
-# DAG DEFINITION
-dag = DAG(
-    dag_id="bike_trips_etl",
-    default_args=default_args,
-    schedule="@hourly",
-    catchup=False,
-    description="Extract bike trip CSVs/XLSXs from local data/raw/ and load into Snowflake",
-)
 
 # CORE COLUMNS
 CORE_COLUMNS = [
@@ -48,7 +34,7 @@ COLUMN_MAP = {
 
     # Bike info
     "bike":                             "bike",
-    "electric":                    "electric_bike",
+    "electric":                         "electric_bike",
     "electric bike":                    "electric_bike",
 
     # Stations
@@ -73,6 +59,7 @@ COLUMN_MAP = {
     "number of stopovers":              "number_of_stopovers",
     "number of bike stopovers":         "number_of_stopovers",
 }
+
 
 def read_file(filepath: str) -> pd.DataFrame:
     """Read a CSV or XLSX file into a dataframe."""
@@ -133,192 +120,6 @@ def parse_filename_date(filename: str) -> str:
     return parts[-1]  # last segment is always the date portion
 
 
-# -------------------------------------------------------------------
-# TASK 1 - EXTRACT
-# -------------------------------------------------------------------
-def extract(**context):
-    raw_path = os.path.join(os.path.dirname(__file__), "../../../data/raw/")
-    
-    # Collect all CSV and XLSX files
-    files = (
-        glob.glob(os.path.join(raw_path, "*.csv")) +
-        glob.glob(os.path.join(raw_path, "*.xlsx")) +
-        glob.glob(os.path.join(raw_path, "*.xls"))
-    )
-
-    if not files:
-        raise FileNotFoundError(f"No CSV or XLSX files found in data/raw/")
-
-    # Sort files by their date portion so earlier files are processed first
-    files = sorted(files, key=parse_filename_date)
-    print(f"Found {len(files)} files to process")
-
-    dfs = []
-    for file in files:
-        filename = os.path.basename(file)
-        print(f"Processing: {filename}")
-        try:
-            df = read_file(file)
-            df = normalize_columns(df)
-            df["source_file"] = filename
-            print(f"  -> {len(df)} rows loaded")
-            dfs.append(df)
-        except Exception as e:
-            print(f"  WARNING: Skipping {filename} due to error: {e}")
-            continue
-
-    if not dfs:
-        raise ValueError("No files were successfully processed")
-
-    combined = pd.concat(dfs, ignore_index=True)
-    print(f"\nTotal rows before deduplication: {len(combined)}")
-
-    # Deduplicate
-    before = len(combined)
-    combined = combined.drop_duplicates(
-        subset=["departure", "bike", "departure_station"],
-        keep="first"
-    )
-    after = len(combined)
-    print(f"Dropped {before - after} duplicate rows")
-    print(f"Total rows after deduplication: {after}")
-
-
-    # Timestamps
-    combined["departure"] = pd.to_datetime(combined["departure"], errors="coerce")
-    combined["return"]    = pd.to_datetime(combined["return"],    errors="coerce")
-
-    # bike is INT
-    combined["bike"] = pd.to_numeric(combined["bike"], errors="coerce").astype("Int64")
-
-    # electric_bike is BOOLEAN
-    combined["electric_bike"] = combined["electric_bike"].fillna(False).astype(bool)
-
-    # string columns - ensure they are str not mixed types
-    for col in ["departure_station", "return_station", "membership_type", "source_file"]:
-        combined[col] = combined[col].astype(str).str.strip()
-
-    # float columns
-    float_cols = [
-        "covered_distance_m",
-        "duration_sec",
-        "departure_temperature_c",
-        "return_temperature_c",
-        "stopover_duration_sec",
-        "number_of_stopovers",
-    ]
-    for col in float_cols:
-        combined[col] = pd.to_numeric(combined[col], errors="coerce").astype(float)
-
-
-    staging_path = "/tmp/mobi_staging.parquet"
-    combined.to_parquet(staging_path, index=False)
-    context["ti"].xcom_push(key="staging_path", value=staging_path)
-    return staging_path
-
-
-# TASK 2 - VALIDATE
-def validate(**context):
-    staging_path = context["ti"].xcom_pull(
-        task_ids="extract",
-        key="staging_path"
-    )
-    if not staging_path or not os.path.exists(staging_path):
-        raise FileNotFoundError(f"Staging file not found: {staging_path}. Did extract task run successfully?")
-
-    df = pd.read_parquet(staging_path)
-
-    # These fields must never be null
-    critical_fields = ["departure", "departure_station", "return_station"]
-
-    null_counts = df[CORE_COLUMNS].isnull().sum()
-    print(f"Null counts per column:\n{null_counts}")
-
-    before = len(df)
-    df = df.dropna(subset=critical_fields)
-    after = len(df)
-    print(f"Dropped {before - after} rows missing critical fields")
-
-    # Ensure electric_bike is boolean
-    df["electric_bike"] = df["electric_bike"].fillna(False).astype(bool)
-
-    # Ensure numeric fields are cast correctly
-    df["covered_distance_m"] = pd.to_numeric(df["covered_distance_m"], errors="coerce").astype(float)
-    df["duration_sec"] = pd.to_numeric(df["duration_sec"], errors="coerce").astype("Int64").astype(float)
-    df["departure_temperature_c"] = pd.to_numeric(df["departure_temperature_c"], errors="coerce").astype(float)
-    df["return_temperature_c"] = pd.to_numeric(df["return_temperature_c"], errors="coerce").astype(float)
-    df["stopover_duration_sec"] = pd.to_numeric(df["stopover_duration_sec"], errors="coerce").astype(float)
-    df["number_of_stopovers"] = pd.to_numeric(df["number_of_stopovers"], errors="coerce").astype(float)
-    df["bike"] = pd.to_numeric(df["bike"], errors="coerce").astype("Int64")
-
-    df.to_parquet(staging_path, index=False)
-    print(f"Validation passed. {after} clean rows ready to load.")
-
-    
-
-
-# TASK 3 - LOAD
-def load(**context):
-    staging_path = context["ti"].xcom_pull(
-        task_ids="extract",
-        key="staging_path"
-    )
-
-    if not staging_path or not os.path.exists(staging_path):
-        raise FileNotFoundError(f"Staging file not found: {staging_path}. Did validate task run successfully?")
-
-    df = pd.read_parquet(staging_path)
-
-    conn = get_snowflake_conn()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS raw_bike_trips (
-            departure                   TIMESTAMP,
-            return                      TIMESTAMP,
-            bike                        INT,
-            electric_bike               BOOLEAN,
-            departure_station           VARCHAR,
-            return_station              VARCHAR,
-            membership_type             VARCHAR,
-            covered_distance_m          FLOAT,
-            duration_sec                FLOAT,
-            departure_temperature_c     FLOAT,
-            return_temperature_c        FLOAT,
-            stopover_duration_sec       FLOAT,
-            number_of_stopovers         FLOAT,
-            source_file                 VARCHAR,
-            loaded_at                   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    rows = [tuple(row) for row in df[
-        CORE_COLUMNS + ["source_file"]
-    ].itertuples(index=False)]
-
-    batch_size = 1000
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i:i + batch_size]
-        cursor.executemany(
-            """
-            INSERT INTO raw_bike_trips (
-                departure, return, bike, electric_bike,
-                departure_station, return_station, membership_type,
-                covered_distance_m, duration_sec,
-                departure_temperature_c, return_temperature_c,
-                stopover_duration_sec, number_of_stopovers,
-                source_file
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            batch,
-        )
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print(f"Loaded {len(rows)} rows into Snowflake raw_bike_trips")
-
-
 # SNOWFLAKE CONNECTION
 def get_snowflake_conn():
     return snowflake.connector.connect(
@@ -330,7 +131,211 @@ def get_snowflake_conn():
         schema=os.getenv("SNOWFLAKE_SCHEMA"),
     )
 
+# POSTGRES CONNECTION
+def get_postgres_conn():
+    return psycopg.connect(
+        host=os.getenv("POSTGRES_HOST","postgres-data"),
+        port=os.getenv("POSTGRES_PORT", "5432"),
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD"),
+        dbname=os.getenv("POSTGRES_DATABASE"),
+    )
 
-t1_extract = PythonOperator(task_id="extract", python_callable=extract, dag=dag)
-t2_validate = PythonOperator(task_id="validate", python_callable=validate, dag=dag)
-t3_load = PythonOperator(task_id="load", python_callable=load, dag=dag)
+@dag(
+    dag_id="bike_trips_etl",
+    schedule=None,
+    start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
+    catchup=False,
+    description="Extract bike trip CSVs/XLSXs from local data/raw/ and load into Snowflake",
+)
+def bike_trips_etl():
+    @task()
+    def extract(**context):
+        raw_path = os.path.join(os.path.dirname(__file__), "../data/raw/")
+        
+        # Collect all CSV and XLSX files
+        files = (
+            glob.glob(os.path.join(raw_path, "*.csv")) +
+            glob.glob(os.path.join(raw_path, "*.xlsx")) +
+            glob.glob(os.path.join(raw_path, "*.xls"))
+        )
+        if not files:
+            raise FileNotFoundError(f"No CSV or XLSX files found in data/raw/")
+
+        # Sort files by their date portion so earlier files are processed first
+        files = sorted(files, key=parse_filename_date)
+        print(f"Found {len(files)} files to process")
+
+        dfs = []
+        for file in files:
+            filename = os.path.basename(file)
+            print(f"Processing: {filename}")
+            try:
+                df = read_file(file)
+                df = normalize_columns(df)
+                df["source_file"] = filename
+                print(f"  -> {len(df)} rows loaded")
+                dfs.append(df)
+            except Exception as e:
+                print(f"  WARNING: Skipping {filename} due to error: {e}")
+                continue
+
+        dfs = [df for df in dfs if not df.empty and len(df) > 0]
+
+        if not dfs:
+            raise ValueError("No files were successfully processed")
+
+        combined = pd.concat(dfs, ignore_index=True)
+        print(f"\nTotal rows before deduplication: {len(combined)}")
+
+        # Deduplicate
+        before = len(combined)
+        combined = combined.drop_duplicates(
+            subset=["departure", "bike", "departure_station"],
+            keep="first"
+        )
+        after = len(combined)
+        print(f"Dropped {before - after} duplicate rows")
+        print(f"Total rows after deduplication: {after}")
+
+
+        # Timestamps
+        combined["departure"] = pd.to_datetime(combined["departure"], errors="coerce")
+        combined["return"]    = pd.to_datetime(combined["return"],    errors="coerce")
+
+        # bike is INT
+        combined["bike"] = pd.to_numeric(combined["bike"], errors="coerce").astype("Int64")
+
+        # electric_bike is BOOLEAN
+        combined["electric_bike"] = combined["electric_bike"].fillna(False).astype(bool)
+
+        # string columns - ensure they are str not mixed types
+        for col in ["departure_station", "return_station", "membership_type", "source_file"]:
+            combined[col] = combined[col].astype(str).str.strip()
+
+        # float columns
+        float_cols = [
+            "covered_distance_m",
+            "duration_sec",
+            "departure_temperature_c",
+            "return_temperature_c",
+            "stopover_duration_sec",
+            "number_of_stopovers",
+        ]
+        for col in float_cols:
+            combined[col] = pd.to_numeric(combined[col], errors="coerce").astype(float)
+
+
+        staging_path = "/tmp/mobi_staging.parquet"
+        combined.to_parquet(staging_path, index=False)
+        
+        # Push to XCom using return value (preferred in Airflow 3.x)
+        return staging_path
+
+    @task()
+    def transform(staging_path: str):
+        if not staging_path or not os.path.exists(staging_path):
+            raise FileNotFoundError(f"Staging file not found: {staging_path}. Did extract task run successfully?")
+
+        df = pd.read_parquet(staging_path)
+
+        # These fields must never be null
+        critical_fields = ["departure", "departure_station", "return_station"]
+
+        null_counts = df[CORE_COLUMNS].isnull().sum()
+        print(f"Null counts per column:\n{null_counts}")
+
+        before = len(df)
+        df = df.dropna(subset=critical_fields)
+        after = len(df)
+        print(f"Dropped {before - after} rows missing critical fields")
+
+        # Ensure electric_bike is boolean
+        df["electric_bike"] = df["electric_bike"].fillna(False).astype(bool)
+
+        # Ensure numeric fields are cast correctly
+        df["covered_distance_m"] = pd.to_numeric(df["covered_distance_m"], errors="coerce").astype(float)
+        df["duration_sec"] = pd.to_numeric(df["duration_sec"], errors="coerce").astype("Int64").astype(float)
+        df["departure_temperature_c"] = pd.to_numeric(df["departure_temperature_c"], errors="coerce").astype(float)
+        df["return_temperature_c"] = pd.to_numeric(df["return_temperature_c"], errors="coerce").astype(float)
+        df["stopover_duration_sec"] = pd.to_numeric(df["stopover_duration_sec"], errors="coerce").astype(float)
+        df["number_of_stopovers"] = pd.to_numeric(df["number_of_stopovers"], errors="coerce").astype(float)
+        df["bike"] = pd.to_numeric(df["bike"], errors="coerce").astype("Int64")
+
+        df.to_parquet(staging_path, index=False)
+        print(f"Validation passed. {after} clean rows ready to load.")
+        
+        return staging_path
+
+    # @task()  
+    # def load(staging_path: str):
+    #     if not staging_path or not os.path.exists(staging_path):
+    #         raise FileNotFoundError(f"Staging file not found: {staging_path}. Did validate task run successfully?")
+
+    #     df = pd.read_parquet(staging_path)
+
+    #     conn = get_snowflake_conn()
+    #     try:
+    #         # write_pandas handles staging and COPY INTO automatically
+    #         success, nchunks, nrows, _ = write_pandas(
+    #             conn=conn,
+    #             df=df,
+    #             table_name='raw_bike_trips',
+    #             auto_create_table=True
+    #         )
+
+    #         if success:
+    #             print(f"Successfully loaded {nrows} rows into RAW_BIKE_TRIPS")
+                
+    #     finally:
+    #         conn.commit()
+    #         conn.close()
+    @task()  
+    def load(staging_path: str):
+        if not staging_path or not os.path.exists(staging_path):
+            raise FileNotFoundError(f"Staging file not found: {staging_path}. Did validate task run successfully?")
+
+        df = pd.read_parquet(staging_path)
+
+        conn = get_postgres_conn()
+        try:
+            with conn.cursor() as cur:
+                # Create table if it doesn't exist
+                create_table_sql = """
+                CREATE TABLE IF NOT EXISTS raw_bike_trips (
+                    departure TIMESTAMP,
+                    return TIMESTAMP,
+                    bike BIGINT,
+                    electric_bike BOOLEAN,
+                    departure_station TEXT,
+                    return_station TEXT,
+                    membership_type TEXT,
+                    covered_distance_m REAL,
+                    duration_sec REAL,
+                    departure_temperature_c REAL,
+                    return_temperature_c REAL,
+                    stopover_duration_sec REAL,
+                    number_of_stopovers REAL,
+                    source_file TEXT
+                );
+                """
+                cur.execute(create_table_sql)
+                
+                with cur.copy("COPY raw_bike_trips FROM STDIN") as copy:
+                    for row in df.itertuples(index=False, name=None):
+                        clean_row = tuple(None if val is pd.NA or val != val else val for val in row)
+                        copy.write_row(clean_row)
+
+                nrows = len(df)
+                print(f"Successfully loaded {nrows} rows into raw_bike_trips")
+                
+        finally:
+            conn.commit()
+            conn.close()
+
+    # Define task dependencies
+    staging_path = extract()
+    validated_path = transform(staging_path)
+    load(validated_path)
+
+bike_trips_etl()
