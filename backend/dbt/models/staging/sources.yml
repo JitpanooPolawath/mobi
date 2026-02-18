@@ -4,9 +4,10 @@ sources:
   - name: raw
 
     # Snowflake database
-    database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
-    schema: "{{ env_var('SNOWFLAKE_SCHEMA') }}"
-    
+    # database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+    # schema: "{{ env_var('SNOWFLAKE_SCHEMA') }}"
+    database: "{{ env_var('POSTGRES_DATABASE') }}"
+    schema: "{{ env_var('POSTGRES_SCHEMA') }}"
     # Source table description
     tables:
       - name: raw_bike_trips
@@ -40,5 +41,3 @@ sources:
             description: "Number of stopovers during the trip"
           - name: source_file
             description: "Source filename this row was loaded from"
-          - name: loaded_at
-            description: "Timestamp when this row was inserted into Snowflake"

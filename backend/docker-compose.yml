@@ -6,7 +6,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-    _PIP_ADDITIONAL_REQUIREMENTS: "openpyxl psycopg[binary]"
+    _PIP_ADDITIONAL_REQUIREMENTS: "openpyxl psycopg[binary] dbt-postgres==1.7.19"
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     AIRFLOW__API__SECRET_KEY: ${ACCESS_KEY}
@@ -195,18 +195,21 @@ services:
 
   # Runs dbt commands triggered by Airflow via subprocess
   dbt:
-    image: ghcr.io/dbt-labs/dbt-snowflake:1.7.0
+    # Snowflake
+    # image: ghcr.io/dbt-labs/dbt-snowflake:1.7.0
+    # Postgres
+    image: ghcr.io/dbt-labs/dbt-postgres:1.7.19
     volumes:
       - ./dbt:/usr/app/dbt
     working_dir: /usr/app/dbt
     environment:
-      SNOWFLAKE_USER: ${SNOWFLAKE_USER}
-      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
-      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
-      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
-      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
-      SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
-      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+      # SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+      # SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+      # SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+      # SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+      # SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
+      # SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
+      # SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_USER: ${POSTGRES_USER}
