@@ -25,13 +25,13 @@ def run_dbt_command(command: list[str]):
     )
 
     # Stream stdout and stderr to Airflow logs
-    print(result)
+    # print(result)
     print(result.stdout)
-    # if result.stderr:
-    #     print(result.stderr)
+    if result.stderr:
+        print(result.stderr)
 
-    # if result.returncode != 0:
-    #     raise RuntimeError(f"dbt command failed: {' '.join(command)}")
+    if result.returncode != 0:
+        raise RuntimeError(f"dbt command failed: {' '.join(command)}")
 
 
 @dag(

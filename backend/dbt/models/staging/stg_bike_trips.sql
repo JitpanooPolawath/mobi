@@ -66,15 +66,13 @@ cleaned as (
         stopover_duration_sec::FLOAT AS stopover_duration_sec,
         number_of_stopovers::FLOAT AS number_of_stopovers,
 
-        -- Date Transformations (Departure)
         DATE_TRUNC('hour', departure) AS departed_hour, 
         DATE_TRUNC('day', departure) AS departed_date,
-        EXTRACT(DOW FROM departure) AS departed_day_of_week, -- 0 (Sun) to 6 (Sat)
+        EXTRACT(DOW FROM departure) AS departed_day_of_week,
         EXTRACT(HOUR FROM departure) AS departure_hour,
         EXTRACT(MONTH FROM departure) AS departure_month,
         EXTRACT(YEAR FROM departure) AS departure_year,
 
-        -- Date Transformations (Return)
         DATE_TRUNC('hour', "return") AS returned_hour_trun, 
         DATE_TRUNC('day', "return") AS returned_day_trun,
         EXTRACT(DOW FROM "return") AS returned_day_of_week,
