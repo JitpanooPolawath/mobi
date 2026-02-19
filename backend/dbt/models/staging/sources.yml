@@ -41,3 +41,12 @@ sources:
             description: "Number of stopovers during the trip"
           - name: source_file
             description: "Source filename this row was loaded from"
+      - name: stations
+        description: "dssd"
+        columns: 
+          - name: station
+            description: "Station name"
+          - name: longitude
+            description: "Longitude of the station"
+          - name: latitude
+            description: "Latitude of the station"

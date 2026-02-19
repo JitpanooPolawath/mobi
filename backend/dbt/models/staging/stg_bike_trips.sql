@@ -50,14 +50,17 @@ with source as (
 
 
 -- Postgres
+stations as (
+    SELECT * FROM {{ source('raw', 'stations') }}
+),
 cleaned as (
     SELECT
         departure AS departed_at,
         "return" AS returned_at,
         bike AS bike_id,
         COALESCE(electric_bike, FALSE) AS is_electric,
-        departure_station,
-        return_station,
+        REGEXP_REPLACE(departure_station, '^[0-9]{4}\s', '') AS departure_station,
+        REGEXP_REPLACE(return_station, '^[0-9]{4}\s', '') AS return_station,
         membership_type,
         covered_distance_m::FLOAT AS distance_m,
         duration_sec::FLOAT AS duration_sec,
@@ -84,7 +87,9 @@ cleaned as (
     FROM source
     WHERE departure IS NOT NULL
       AND departure_station IS NOT NULL
+      AND departure_station != 'nan'
       AND return_station IS NOT NULL
+      AND return_station != 'nan'
 )
 
 -- Create a materialize view (Faster read and won't be update a lot)
