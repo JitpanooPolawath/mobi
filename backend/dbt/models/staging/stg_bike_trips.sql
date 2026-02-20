@@ -50,9 +50,6 @@ with source as (
 
 
 -- Postgres
-stations as (
-    SELECT * FROM {{ source('raw', 'stations') }}
-),
 cleaned as (
     SELECT
         departure AS departed_at,
@@ -87,10 +84,24 @@ cleaned as (
     FROM source
     WHERE departure IS NOT NULL
       AND departure_station IS NOT NULL
+      AND departure_station != ''
       AND departure_station != 'nan'
       AND return_station IS NOT NULL
       AND return_station != 'nan'
+      AND return_station != ''
+),combined as (
+    select 
+        cleaned.*,
+        st."longitude" as departure_longitude,
+        st."latitude" as departure_latitude,
+        st2."longitude" as return_longitude,
+        st2."latitude" as return_latitude
+    FROM cleaned
+    LEFT JOIN {{ source('raw', 'stations') }} as st 
+        ON st."station" = departure_station 
+    LEFT JOIN {{ source('raw', 'stations') }} as st2 
+        ON st2."station" = return_station 
 )
 
 -- Create a materialize view (Faster read and won't be update a lot)
-select * from cleaned
+select * from combined

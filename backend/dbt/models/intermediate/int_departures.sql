@@ -3,6 +3,8 @@ with trips as (
 ),departures as (
     select
         departure_station           as station,
+        departure_longitude,
+        departure_latitude,
         departed_hour,
         departed_date,
         departure_hour,
@@ -14,7 +16,7 @@ with trips as (
         avg(distance_m)             as avg_departure_distance_m,
         sum(case when is_electric then 1 else 0 end) as electric_departures
     from trips
-    group by 1, 2, 3, 4, 5, 6, 7
+    group by 1, 2, 3, 4, 5, 6, 7, 8, 9
 )
 
 select * from departures

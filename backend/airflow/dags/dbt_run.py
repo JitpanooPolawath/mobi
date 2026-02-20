@@ -72,8 +72,8 @@ def dbt_run_dag():
         run_dbt_command(["run", "--select", "marts"])
 
     # dbt_deps() >>
-    dbt_run_staging()
-    # >> dbt_run_intermediate() >> dbt_run_marts()
+    dbt_run_staging() >> dbt_run_intermediate()
+    #  >> dbt_run_marts()
 
 
 # Instantiate the DAG
